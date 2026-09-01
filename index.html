@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Desired state for a three-node AutoMQ cluster on Vultr — Kafka-compatible brokers whose storage tier is Cloudflare R2, behind a public SASL_SSL endpoint.">
+  <title>automq-vultr Deployment — getcolors</title>
+  <style>
+    :root{color-scheme:light;--ink:#1f2328;--muted:#59636e;--line:#d0d7de;--soft:#f6f8fa;--blue:#0969da;--green:#1a7f37;--warn:#9a6700}*{box-sizing:border-box}body{margin:0;color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:920px;margin:auto;padding:64px 28px 100px}h1{font-size:52px;line-height:1.05;margin:0}h2{margin-top:54px;padding-bottom:8px;border-bottom:1px solid var(--line)}h3{margin-top:30px}.lead{font-size:20px;color:var(--muted);max-width:790px}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}pre{padding:18px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--soft)}:not(pre)>code{padding:.12em .35em;border-radius:5px;background:var(--soft)}a{color:var(--blue)}.eyebrow{color:var(--green);font-weight:700;letter-spacing:.08em}.callout{padding:16px 18px;border-left:4px solid var(--green);background:#dafbe1}.warning{border-color:var(--warn);background:#fff8c5}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{padding:18px;border:1px solid var(--line);border-radius:8px}.card h3{margin-top:0}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{padding:8px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--soft)}@media(max-width:650px){main{padding-top:38px}.grid{grid-template-columns:1fr}h1{font-size:40px}}
+  </style>
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-4VKP1WY4QJ"></script>
+  <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config','G-4VKP1WY4QJ',{page_title:'automq-vultr Deployment — getcolors'});</script>
+<script src="https://rybbit.getcolors.ai/api/script.js" data-site-id="9fb9c41a6d49" defer></script>
+</head>
+<body><main>
+  <p class="eyebrow">DEPLOYMENT · VULTR · AUTOMQ</p>
+  <h1>automq-vultr</h1>
+  <p class="lead">Desired state for a three-node <a href="https://github.com/AutoMQ/automq">AutoMQ</a> cluster on Vultr, run by the <a href="https://github.com/getcolors/automq">automq</a> Package Skill. No source code lives here — one <code>colors.yml</code>, one installed launcher, and everything else generated or secret.</p>
+
+  <div class="callout"><strong>Replication factor 1 is the architecture.</strong> AutoMQ acknowledges a produce once the record is in Cloudflare R2, so replicas would add cost and write amplification without adding durability. The three nodes buy the KRaft controller quorum, partition failover, and throughput — not copies.</div>
+
+  <h2>Shape</h2>
+  <table>
+    <tr><th>Bootstrap</th><td><code>automq.bigconfig.online:9092</code></td></tr>
+    <tr><th>Brokers</th><td><code>b0</code>, <code>b1</code>, <code>b2</code> under the same name</td></tr>
+    <tr><th>Compute</th><td>3 &times; <code>vc2-4c-8gb</code> in <code>ams</code>, one VPC</td></tr>
+    <tr><th>Storage</th><td>R2 buckets <code>automq-data</code> and <code>automq-ops</code>, adopted not created</td></tr>
+    <tr><th>Cost</th><td>about $120/month</td></tr>
+  </table>
+
+  <h2>Exposure</h2>
+  <table>
+    <tr><th>Port</th><th>Exposure</th><th>Purpose</th></tr>
+    <tr><td>22</td><td>public, key-only</td><td>Convergence and recovery</td></tr>
+    <tr><td>9092</td><td>public</td><td>Kafka: SASL_SSL, SCRAM-SHA-512, ACL-gated</td></tr>
+    <tr><td>9093 / 9094</td><td>VPC only</td><td>Controller quorum and inter-broker traffic</td></tr>
+  </table>
+
+  <h2>Connecting</h2>
+  <pre><code>kcat -b automq.bigconfig.online:9092 \
+  -X security.protocol=SASL_SSL \
+  -X sasl.mechanism=SCRAM-SHA-512 \
+  -X sasl.username=automq \
+  -X sasl.password=&lt;ssh automq-vultr sudo automq-credential&gt; -L</code></pre>
+  <p>The client principal may produce and consume under the <code>colors-</code> prefix and nothing else — 9092 faces the internet, and authentication alone is not a boundary.</p>
+
+  <div class="callout warning"><strong><code>delete</code> does not empty the buckets.</strong> They hold the cluster&rsquo;s data, so a teardown that erased them would make an accidental delete unrecoverable. Purging is separate and manual, including the <code>_colors/automq-vultr/</code> ownership markers.</div>
+
+  <h2>Source</h2>
+  <p><a href="https://github.com/getcolors/automq-vultr">github.com/getcolors/automq-vultr</a> &middot; package <a href="https://github.com/getcolors/automq">automq</a> &middot; <a href="https://www.getcolors.ai/">getcolors.ai</a></p>
+</main></body>
+</html>

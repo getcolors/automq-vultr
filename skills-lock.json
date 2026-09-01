@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "package-automq-green": {
+      "source": "getcolors/automq",
+      "sourceType": "github",
+      "skillPath": "skills/package-automq-green/SKILL.md",
+      "computedHash": "7bd6d940aab1f410f2917bcd278627a2c492a14ee354df625fb57975d376a725"
+    }
+  }
+}

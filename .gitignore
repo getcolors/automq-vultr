@@ -1,0 +1,11 @@
+# Default-deny dotfiles so credentials, generated state, and newly introduced
+# private files cannot be committed accidentally.
+.*
+
+# Safe project metadata explicitly admitted to source control.
+!.envrc
+!.gitignore
+!.agents
+!.claude
+!.github
+!.nojekyll

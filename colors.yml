@@ -1,0 +1,165 @@
+# Desired state for automq-vultr. Non-secret values only.
+# Credentials belong in the gitignored .envrc.private as COLORS_PAR_* variables.
+# Never export COLORS_PAR_PROFILE: it selects this deployment's remote state.
+#
+# Required credentials:
+#   Vultr           COLORS_PAR_VULTR_API_KEY
+#   Cloudflare      COLORS_PAR_CLOUDFLARE_API_TOKEN
+#                   (edit rights on the bigconfig.online zone: the bootstrap
+#                   and broker A records, and the DNS-01 TXT records for the
+#                   certificate — one record-edit scope covers both. It
+#                   reaches node 0 only, the single ACME issuer.)
+#   state in R2     COLORS_PAR_R2_ACCESS_KEY_ID
+#                   COLORS_PAR_R2_SECRET_ACCESS_KEY
+#   AutoMQ data     COLORS_PAR_AUTOMQ_R2_ACCESS_KEY_ID
+#   in R2           COLORS_PAR_AUTOMQ_R2_SECRET_ACCESS_KEY
+#                   (Object Read & Write, scoped to the automq-data and
+#                   automq-ops buckets only — the one credential that reaches
+#                   the hosts)
+#
+# Every password inside the cluster — the four SASL principals, their SCRAM
+# salts, and the keystore password — is generated on node 0 at first converge,
+# create-once, and propagated to the quorum. None is operator-supplied.
+# Retrieve the client credential over SSH with `sudo automq-credential`, which
+# is deliberately a separate command from `automq-status`: routine health
+# output must not carry a password.
+
+profile: automq-vultr
+workdir: .colors
+
+provider-compute: vultr
+provider-dns: cloudflare
+provider-backend: r2
+
+# Preserve this guard in committed desired state. Destruction requires an
+# explicitly authorized one-run override; never edit this flag to bypass it.
+compute-prevent-destroy: true
+
+# --- AutoMQ -----------------------------------------------------------------
+
+# AutoMQ 1.7.4, released 2026-08-29, built on Apache Kafka 3.9.1. Pinned by tag
+# AND digest: this package owns its unit and configuration templates rather
+# than running an upstream installer, so a silent retag must surface as a
+# digest mismatch rather than as a behaviour change on the next converge.
+automq-image: automqinc/automq:1.7.4@sha256:68bf5df674ab9755da51f5200c152df391b0968aeeaf9ec4d12619517cd1234f
+
+# Three nodes, each carrying both KRaft roles (process.roles=broker,controller).
+# Three is the smallest quorum that survives losing one node; it is desired
+# state rather than a constant because the node list drives the compute stage,
+# the DNS records, the certificate SANs, and controller.quorum.voters together.
+automq-node-count: 3
+
+# The cluster identity, fixed here rather than minted at runtime: `kafka-storage
+# format` writes it into every node's metadata log, and it is also the object
+# namespace in R2 (_kafka_<cluster-id>), so it is what names this cluster's data.
+# Changing it on a live deployment orphans the existing data instead of renaming
+# it. A base64 UUID as produced by `kafka-storage.sh random-uuid`.
+automq-cluster-id: VrUQI4OSR0y5vnTrGiKsxQ
+
+# --- Names and TLS ----------------------------------------------------------
+
+# Bootstrap name; A records for all three nodes hang off it, so a client that
+# knows only this name can discover the cluster. Kafka then redirects to the
+# per-broker advertised names below, which is why one round-robin record is not
+# sufficient on its own.
+automq-host: automq.bigconfig.online
+
+# Per-broker advertised names: b0.automq.bigconfig.online, b1..., b2...
+# The prefix is joined to the node index and automq-host.
+automq-broker-name-prefix: b
+
+# One certificate covers both the bootstrap name and every broker name, issued
+# by lego over DNS-01 with the same Cloudflare token that writes the A records,
+# then converted to a PKCS12 keystore on each node. Renewal runs on a systemd
+# timer; acceptance asserts the served chain, not just the file's presence.
+automq-letsencrypt-email: claude@ululi.it
+automq-lego-version: 5.4.0
+
+# --- Listeners and authentication -------------------------------------------
+
+# Three listeners. CONTROLLER and INTERNAL bind the Vultr VPC address only, so
+# the KRaft quorum and replication never cross the public interface. EXTERNAL is
+# the only public one: SASL_SSL, SCRAM-SHA-512, on 9092.
+automq-kafka-port: 9092
+automq-internal-port: 9094
+automq-controller-port: 9093
+
+# The SCRAM user convergence creates. Its password is generated on node 0,
+# create-once under /etc/automq/secrets/, and registered with every node;
+# `automq-status` prints it over SSH. There is no anonymous access on 9092.
+automq-sasl-user: automq
+automq-sasl-mechanism: SCRAM-SHA-512
+
+# Heap and direct memory for an 8 GiB node. AutoMQ holds the WAL cache and the
+# block cache off-heap, so direct memory is sized deliberately rather than left
+# to the JVM default; the sum must stay clear of the box's 8 GiB.
+automq-heap-opts: "-Xms2g -Xmx2g -XX:MetaspaceSize=96m -XX:MaxDirectMemorySize=3g"
+
+# --- AutoMQ data in R2 ------------------------------------------------------
+
+# AutoMQ's write path is object storage: every append lands in the S3 WAL and
+# is later compacted into stream objects. Data and ops are separate buckets,
+# addressed by AutoMQ's own bucket ids (0 data, 1 ops), which is also the split
+# upstream ships.
+#
+# These buckets are AutoMQ's alone, and that is a requirement rather than
+# tidiness: AutoMQ supports no configurable path prefix. Object keys are
+# <hash>/_kafka_<cluster-id>/<id> at the bucket root, where <hash> is derived
+# from the object or node id, so it cannot be confined to a prefix inside a
+# shared bucket. Convergence adopts these buckets rather than creating them —
+# the scoped token cannot create buckets — and guards adoption with two-phase
+# ownership markers, so a foreign or half-initialized bucket fails the converge
+# instead of being attached.
+#
+# Never configure R2 lifecycle rules on either bucket: they would delete live
+# WAL and stream objects that AutoMQ still references.
+automq-data-r2-bucket: automq-data
+automq-ops-r2-bucket: automq-ops
+automq-r2-endpoint: https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com
+automq-r2-region: auto
+
+# The WAL batching window, and the lever that pays for R2 being a different
+# provider than the compute: every produce acknowledgement waits on an S3 write
+# from Vultr ams to Cloudflare EU, so the batch interval is latency traded for
+# throughput. Raise the interval if p99 produce latency is unacceptable; lower
+# it only against a same-region store. Acceptance measures and reports p99.
+automq-wal-batch-interval-ms: 250
+automq-wal-max-bytes-in-batch: 8388608
+
+# --- Vultr ------------------------------------------------------------------
+
+# No vultr-name: per workspace standards/compute-name.md the machines and the
+# firewall are named after the profile; the nodes take a numeric suffix
+# (automq-vultr-0, -1, -2) because there is more than one.
+vultr-region: ams
+# ClickHouse-class memory is not needed, but the JVM plus page cache plus the
+# off-heap caches above do not fit the 4 GiB plan; 4 vCPU / 8 GiB per node.
+vultr-plan: vc2-4c-8gb
+# Vultr operating systems are numeric ids; 2284 is Ubuntu 24.04 LTS x64.
+vultr-os-id: 2284
+
+# The private network carrying the KRaft quorum and inter-broker replication.
+# Nothing on these ports is published; the firewall opens only 22 and 9092.
+vultr-vpc-subnet: 10.40.0.0/24
+
+# No vultr-ssh-keys: keygen mode per workspace standards/ssh-keypair.md. The
+# package generates and owns ~/.ssh/automq-vultr and registers the account key
+# resource named after the profile. Setting vultr-ssh-keys here would switch
+# this deployment to opt-out mode.
+
+vultr-ssh-sources:
+  - 0.0.0.0/0
+  - "::/0"
+# The Kafka bootstrap and broker port. Public by design — this is the whole
+# point of the SASL_SSL listener — and gated by SCRAM, not by the firewall.
+# Narrow this to known client addresses if the cluster ever holds real data.
+vultr-kafka-sources:
+  - 0.0.0.0/0
+  - "::/0"
+# No HTTP source is declared: the certificate is issued over DNS-01, which
+# needs no inbound port, so 80 and 443 stay closed.
+
+# --- R2 state backend -------------------------------------------------------
+
+r2-bucket: tofu-state-319271fed8bc6d2d9059362be1165f37-eu
+r2-endpoint: https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com
